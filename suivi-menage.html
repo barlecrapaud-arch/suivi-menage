@@ -60,12 +60,13 @@ if (SYNC_ACTIF && window.firebase) {
 
 // ---------- Configuration des statuts ----------
 const STATUTS = {
-  propre:    { label: "Propre / Prête",     court: "Prête",     couleur: "#22c55e", bg: "#dcfce7", texte: "#14532d", icone: "✓" },
-  a_faire:   { label: "À faire",            court: "À faire",   couleur: "#3b82f6", bg: "#dbeafe", texte: "#1e3a8a", icone: "•" },
-  en_cours:  { label: "En cours de ménage", court: "En cours",  couleur: "#f59e0b", bg: "#fef3c7", texte: "#78350f", icone: "↻" },
-  probleme:  { label: "Problème signalé",   court: "Problème",  couleur: "#ef4444", bg: "#fee2e2", texte: "#7f1d1d", icone: "!" },
+  propre:       { label: "Propre / Prête",     court: "Prête",        couleur: "#22c55e", bg: "#dcfce7", texte: "#14532d", icone: "✓" },
+  a_faire:      { label: "À faire",            court: "À faire",      couleur: "#3b82f6", bg: "#dbeafe", texte: "#1e3a8a", icone: "•" },
+  en_cours:     { label: "En cours de ménage", court: "En cours",     couleur: "#f59e0b", bg: "#fef3c7", texte: "#78350f", icone: "↻" },
+  probleme:     { label: "Problème signalé",   court: "Problème",     couleur: "#ef4444", bg: "#fee2e2", texte: "#7f1d1d", icone: "!" },
+  ne_pas_faire: { label: "Ne pas faire (occupée)", court: "Ne pas faire", couleur: "#6b7280", bg: "#f1f5f9", texte: "#475569", icone: "⛔" },
 };
-const ORDRE_STATUTS = ["propre", "a_faire", "en_cours", "probleme"];
+const ORDRE_STATUTS = ["propre", "a_faire", "en_cours", "probleme", "ne_pas_faire"];
 const TYPES_PROBLEME = ["Plomberie", "Électricité", "Linge manquant", "Autre"];
 
 // Type de séjour : départ = ménage complet, séjour = rafraîchissement
@@ -107,6 +108,12 @@ function heureCourte(ts) {
   if (!ts) return "";
   const d = new Date(ts);
   return d.toLocaleTimeString("fr-CA", { hour: "2-digit", minute: "2-digit" });
+}
+
+// Date du jour au format "AAAA-MM-JJ" (zéros inclus) pour comparer aux dates de départ
+function aujourdHuiISO() {
+  const d = new Date();
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
 }
 
 // Formate une date "AAAA-MM-JJ" en texte court (ex. « 18 juin »)
@@ -603,20 +610,52 @@ function App() {
   };
 
   const changerDate = (id, dateDepart) => {
-    const maj = { ...chambres[id], dateDepart: dateDepart || null, maj: Date.now() };
+    const c = chambres[id];
+    let statut = c.statut;
+    if (dateDepart) {
+      // Date future → on bloque le ménage ; date du jour ou passée → à faire
+      statut = (dateDepart > aujourdHuiISO()) ? "ne_pas_faire" : "a_faire";
+    } else if (c.statut === "ne_pas_faire") {
+      statut = "a_faire"; // date effacée → on débloque
+    }
+    const maj = { ...c, dateDepart: dateDepart || null, statut, maj: Date.now() };
     if (SYNC_ACTIF && dbChambres) dbChambres.child(String(id)).set(maj);
     setChambres((prev) => ({ ...prev, [id]: maj }));
   };
 
-  // Remet toutes les chambres en « À faire » (réinitialisation de la journée)
+  // Réinitialisation de la journée : « À faire », sauf les chambres avec un départ futur (« Ne pas faire »)
   const reinitialiser = () => {
+    const today = aujourdHuiISO();
     const next = {};
     Object.values(chambres).forEach((c) => {
-      next[c.id] = { ...c, statut: "a_faire", probleme: null, employe: null, debut: null, fin: null, maj: Date.now() };
+      const statut = (c.dateDepart && c.dateDepart > today) ? "ne_pas_faire" : "a_faire";
+      next[c.id] = { ...c, statut, probleme: null, employe: null, debut: null, fin: null, maj: Date.now() };
     });
     if (SYNC_ACTIF && dbChambres) dbChambres.set(next);
     setChambres(next);
   };
+
+  // Bascule auto : une chambre « Ne pas faire » repasse « À faire » quand la date de départ est atteinte
+  useEffect(() => {
+    const verifierDeparts = () => {
+      const today = aujourdHuiISO();
+      setChambres((prev) => {
+        let change = false;
+        const next = { ...prev };
+        Object.values(prev).forEach((c) => {
+          if (c.statut === "ne_pas_faire" && c.dateDepart && c.dateDepart <= today) {
+            next[c.id] = { ...c, statut: "a_faire", maj: Date.now() };
+            change = true;
+            if (SYNC_ACTIF && dbChambres) dbChambres.child(String(c.id)).set(next[c.id]);
+          }
+        });
+        return change ? next : prev;
+      });
+    };
+    verifierDeparts();
+    const t = setInterval(verifierDeparts, 60000);
+    return () => clearInterval(t);
+  }, []);
 
   // Réinitialisation automatique au changement de jour (1re ouverture de la journée)
   useEffect(() => {
@@ -681,11 +720,11 @@ function App() {
         </div>
 
         {/* Résumé */}
-        <div className="grid grid-cols-4 gap-2 mt-3">
+        <div className="grid grid-cols-5 gap-1.5 mt-3">
           {ORDRE_STATUTS.map((st) => (
             <div key={st} className="rounded-xl bg-white/10 backdrop-blur px-1 py-2 text-center">
-              <div className="text-2xl font-extrabold">{compteur(st)}</div>
-              <div className="text-[10px] text-emerald-50/90 leading-tight">{STATUTS[st].court}</div>
+              <div className="text-xl font-extrabold">{compteur(st)}</div>
+              <div className="text-[9px] text-emerald-50/90 leading-tight">{STATUTS[st].court}</div>
             </div>
           ))}
         </div>
