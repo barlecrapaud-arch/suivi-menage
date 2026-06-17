@@ -82,7 +82,7 @@ function genererChambres() {
   ETAGES.forEach((etage) => {
     for (let n = 1; n <= 10; n++) {
       const id = etage * 100 + n;
-      chambres[id] = { id, etage, statut: "a_faire", sejour: "depart", probleme: null, maj: Date.now(), employe: null, debut: null, fin: null };
+      chambres[id] = { id, etage, statut: "a_faire", sejour: "depart", dateDepart: null, probleme: null, maj: Date.now(), employe: null, debut: null, fin: null };
     }
   });
   return chambres;
@@ -107,6 +107,14 @@ function heureCourte(ts) {
   if (!ts) return "";
   const d = new Date(ts);
   return d.toLocaleTimeString("fr-CA", { hour: "2-digit", minute: "2-digit" });
+}
+
+// Formate une date "AAAA-MM-JJ" en texte court (ex. « 18 juin »)
+function formatDateDepart(s) {
+  if (!s) return "";
+  const p = s.split("-").map(Number);
+  if (p.length < 3) return s;
+  return new Date(p[0], p[1] - 1, p[2]).toLocaleDateString("fr-CA", { day: "numeric", month: "short" });
 }
 
 function formatMs(ms) {
@@ -244,13 +252,15 @@ function CarteChambre({ ch, onClick }) {
       >
         <span>{s.icone}</span> {s.court}
       </span>
-      {ch.maj && <span className="mt-1 text-[10px] text-slate-400">{heureCourte(ch.maj)}</span>}
+      {ch.dateDepart
+        ? <span className="mt-1 text-[10px] font-semibold text-slate-500">🛎 {formatDateDepart(ch.dateDepart)}</span>
+        : (ch.maj && <span className="mt-1 text-[10px] text-slate-400">{heureCourte(ch.maj)}</span>)}
     </button>
   );
 }
 
 // ---------- Modal d'actions employé ----------
-function ModalChambre({ ch, onChange, onClose, onSejour }) {
+function ModalChambre({ ch, onChange, onClose, onSejour, estManager, onDate }) {
   const [mode, setMode] = useState("actions"); // actions | probleme | debut
   const [typeP, setTypeP] = useState(TYPES_PROBLEME[0]);
   const [desc, setDesc] = useState("");
@@ -282,6 +292,25 @@ function ModalChambre({ ch, onChange, onClose, onSejour }) {
             <strong>{ch.probleme.type}</strong>{ch.probleme.desc ? " — " + ch.probleme.desc : ""}
           </div>
         )}
+
+        {/* Date de départ : modifiable par le manager, en lecture seule sinon */}
+        <div className="mb-4 rounded-xl bg-slate-50 border border-slate-200 p-3">
+          <div className="text-xs font-semibold text-slate-500 mb-1">🛎 Date de départ</div>
+          {estManager ? (
+            <div className="flex items-center gap-2">
+              <input type="date" value={ch.dateDepart || ""} onChange={(e) => onDate(ch.id, e.target.value)}
+                className="flex-1 rounded-lg border-2 border-slate-200 p-2 text-base focus:border-emerald-500 focus:outline-none" />
+              {ch.dateDepart && (
+                <button onClick={() => onDate(ch.id, null)} className="px-3 py-2 rounded-lg text-slate-500 border border-slate-200 text-sm font-semibold">Effacer</button>
+              )}
+            </div>
+          ) : (
+            <div className="text-base font-bold text-slate-700">
+              {ch.dateDepart ? formatDateDepart(ch.dateDepart) : "Non définie"}
+              <span className="block text-[11px] font-normal text-slate-400">Modifiable par le manager</span>
+            </div>
+          )}
+        </div>
 
         {mode === "actions" && (
           <div className="flex flex-col gap-3">
@@ -572,6 +601,12 @@ function App() {
     setChambres((prev) => ({ ...prev, [id]: maj }));
   };
 
+  const changerDate = (id, dateDepart) => {
+    const maj = { ...chambres[id], dateDepart: dateDepart || null, maj: Date.now() };
+    if (SYNC_ACTIF && dbChambres) dbChambres.child(String(id)).set(maj);
+    setChambres((prev) => ({ ...prev, [id]: maj }));
+  };
+
   // Remet toutes les chambres en « À faire » (réinitialisation de la journée)
   const reinitialiser = () => {
     const next = {};
@@ -705,7 +740,7 @@ function App() {
       )}
 
       {selection && (
-        <ModalChambre ch={chambres[selection.id]} onChange={changerStatut} onSejour={changerSejour} onClose={() => setSelection(null)} />
+        <ModalChambre ch={chambres[selection.id]} onChange={changerStatut} onSejour={changerSejour} onDate={changerDate} estManager={authManager} onClose={() => setSelection(null)} />
       )}
 
       {loginOuvert && (

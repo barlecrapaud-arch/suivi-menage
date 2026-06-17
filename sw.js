@@ -1,7 +1,8 @@
 // Service worker — cache « app shell » + librairies CDN pour le mode hors ligne
-const CACHE = "suivi-menage-v1";
+const CACHE = "suivi-menage-v2";
 
 const A_PRECACHER = [
+  "index.html",
   "suivi-menage.html",
   "manifest.json",
   "icon.svg",
@@ -29,19 +30,17 @@ self.addEventListener("activate", (e) => {
   );
 });
 
-// Stratégie : cache d'abord, puis réseau (et on met à jour le cache au passage)
+// Stratégie : réseau d'abord (pour toujours avoir la dernière version en ligne),
+// puis cache en secours si hors ligne. Le cache est mis à jour à chaque succès réseau.
 self.addEventListener("fetch", (e) => {
   if (e.request.method !== "GET") return;
   e.respondWith(
-    caches.match(e.request).then((cache) => {
-      const reseau = fetch(e.request).then((rep) => {
-        if (rep && rep.status === 200) {
-          const copie = rep.clone();
-          caches.open(CACHE).then((c) => c.put(e.request, copie));
-        }
-        return rep;
-      }).catch(() => cache);
-      return cache || reseau;
-    })
+    fetch(e.request).then((rep) => {
+      if (rep && rep.status === 200) {
+        const copie = rep.clone();
+        caches.open(CACHE).then((c) => c.put(e.request, copie));
+      }
+      return rep;
+    }).catch(() => caches.match(e.request))
   );
 });
