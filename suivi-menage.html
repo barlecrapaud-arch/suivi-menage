@@ -265,6 +265,7 @@ function ModalChambre({ ch, onChange, onClose, onSejour, estManager, onDate }) {
   const [typeP, setTypeP] = useState(TYPES_PROBLEME[0]);
   const [desc, setDesc] = useState("");
   const [nom, setNom] = useState(ch.employe || "");
+  const refDate = React.useRef(null);
   const s = STATUTS[ch.statut];
 
   const maj = (statut, extra = {}) => { onChange(ch.id, statut, extra); onClose(); };
@@ -298,11 +299,11 @@ function ModalChambre({ ch, onChange, onClose, onSejour, estManager, onDate }) {
           <div className="text-xs font-semibold text-slate-500 mb-1">🛎 Date de départ</div>
           {estManager ? (
             <div className="flex items-center gap-2">
-              <input type="date" value={ch.dateDepart || ""} onChange={(e) => onDate(ch.id, e.target.value)}
+              <input ref={refDate} type="date" defaultValue={ch.dateDepart || ""}
+                onChange={(e) => onDate(ch.id, e.target.value)} onBlur={(e) => onDate(ch.id, e.target.value)}
                 className="flex-1 rounded-lg border-2 border-slate-200 p-2 text-base focus:border-emerald-500 focus:outline-none" />
-              {ch.dateDepart && (
-                <button onClick={() => onDate(ch.id, null)} className="px-3 py-2 rounded-lg text-slate-500 border border-slate-200 text-sm font-semibold">Effacer</button>
-              )}
+              <button onClick={() => { if (refDate.current) refDate.current.value = ""; onDate(ch.id, null); }}
+                className="px-3 py-2 rounded-lg text-slate-500 border border-slate-200 text-sm font-semibold">Effacer</button>
             </div>
           ) : (
             <div className="text-base font-bold text-slate-700">
