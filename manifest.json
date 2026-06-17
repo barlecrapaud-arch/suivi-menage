@@ -1,0 +1,15 @@
+{
+  "name": "Suivi Ménage — Hôtel",
+  "short_name": "Suivi Ménage",
+  "description": "Suivi de l'entretien des chambres en temps réel",
+  "start_url": "suivi-menage.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#1b4332",
+  "theme_color": "#1b4332",
+  "lang": "fr-CA",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
