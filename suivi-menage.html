@@ -83,7 +83,7 @@ function genererChambres() {
   ETAGES.forEach((etage) => {
     for (let n = 1; n <= 10; n++) {
       const id = etage * 100 + n;
-      chambres[id] = { id, etage, statut: "a_faire", sejour: "depart", dateDepart: null, probleme: null, maj: Date.now(), employe: null, debut: null, fin: null };
+      chambres[id] = { id, etage, statut: "a_faire", sejour: "depart", dateDepart: null, assignee: null, note: "", probleme: null, maj: Date.now(), employe: null, debut: null, fin: null };
     }
   });
   return chambres;
@@ -122,6 +122,37 @@ function formatDateDepart(s) {
   const p = s.split("-").map(Number);
   if (p.length < 3) return s;
   return new Date(p[0], p[1] - 1, p[2]).toLocaleDateString("fr-CA", { day: "numeric", month: "short" });
+}
+
+// Son d'alerte (bip) via Web Audio
+let _audioCtx = null;
+function amorcerAudio() {
+  try {
+    _audioCtx = _audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (_audioCtx.state === "suspended") _audioCtx.resume();
+  } catch (e) {}
+}
+function bip() {
+  try {
+    amorcerAudio();
+    if (!_audioCtx) return;
+    const o = _audioCtx.createOscillator(), g = _audioCtx.createGain();
+    o.type = "sine"; o.frequency.value = 880; o.connect(g); g.connect(_audioCtx.destination);
+    g.gain.setValueAtTime(0.001, _audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.3, _audioCtx.currentTime + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.001, _audioCtx.currentTime + 0.45);
+    o.start(); o.stop(_audioCtx.currentTime + 0.45);
+  } catch (e) {}
+}
+
+// Rang de priorité du ménage (0 = le plus urgent)
+function priorite(c, today) {
+  if (c.statut === "a_faire" && c.dateDepart === today) return 0; // départ du jour à nettoyer
+  if (c.statut === "en_cours") return 1;                          // finir ce qui est commencé
+  if (c.statut === "a_faire") return 2;                           // à faire (sans départ aujourd'hui)
+  if (c.statut === "probleme") return 3;
+  if (c.statut === "ne_pas_faire") return 4;
+  return 5;                                                       // propre
 }
 
 function formatMs(ms) {
@@ -245,34 +276,38 @@ function CarteChambre({ ch, onClick }) {
   return (
     <button
       onClick={() => onClick(ch)}
-      className="relative flex flex-col items-center justify-center rounded-2xl bg-white shadow-sm active:scale-95 transition-transform aspect-square focus:outline-none"
+      className="relative flex flex-col items-center justify-center rounded-2xl bg-white shadow-sm active:scale-95 transition-transform aspect-square focus:outline-none overflow-hidden px-1"
       style={{ borderLeft: `6px solid ${s.couleur}` }}
     >
       <span className="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded-md text-[9px] font-bold leading-none"
         style={{ background: sej.bg, color: sej.texte }} title={sej.label}>
         {sej.icone}
       </span>
+      {ch.note && <span className="absolute top-1.5 left-1.5 text-[11px] leading-none" title="Note">📝</span>}
       <span className="text-3xl font-extrabold text-slate-800 leading-none">{ch.id}</span>
       <span
-        className="mt-2 px-2 py-0.5 rounded-full text-[11px] font-semibold flex items-center gap-1"
+        className="mt-2 px-2 py-0.5 rounded-lg text-[10px] font-semibold leading-tight text-center max-w-full"
         style={{ background: s.bg, color: s.texte }}
       >
-        <span>{s.icone}</span> {s.court}
+        {s.icone} {s.court}
       </span>
+      {ch.assignee && <span className="mt-1 text-[10px] font-semibold text-emerald-700 truncate max-w-[90%] px-1">👤 {ch.assignee}</span>}
       {ch.dateDepart
-        ? <span className="mt-1 text-[10px] font-semibold text-slate-500">🛎 {formatDateDepart(ch.dateDepart)}</span>
-        : (ch.maj && <span className="mt-1 text-[10px] text-slate-400">{heureCourte(ch.maj)}</span>)}
+        ? <span className="mt-0.5 text-[10px] font-semibold text-slate-500">🛎 {formatDateDepart(ch.dateDepart)}</span>
+        : (!ch.assignee && ch.maj && <span className="mt-1 text-[10px] text-slate-400">{heureCourte(ch.maj)}</span>)}
     </button>
   );
 }
 
 // ---------- Modal d'actions employé ----------
-function ModalChambre({ ch, onChange, onClose, onSejour, estManager, onDate }) {
+function ModalChambre({ ch, onChange, onClose, onSejour, estManager, onDate, onAssignee, nomsConnus, onNote }) {
   const [mode, setMode] = useState("actions"); // actions | probleme | debut
   const [typeP, setTypeP] = useState(TYPES_PROBLEME[0]);
   const [desc, setDesc] = useState("");
   const [nom, setNom] = useState(ch.employe || "");
   const refDate = React.useRef(null);
+  const refAssignee = React.useRef(null);
+  const refNote = React.useRef(null);
   const s = STATUTS[ch.statut];
 
   const maj = (statut, extra = {}) => { onChange(ch.id, statut, extra); onClose(); };
@@ -307,10 +342,12 @@ function ModalChambre({ ch, onChange, onClose, onSejour, estManager, onDate }) {
           {estManager ? (
             <div className="flex items-center gap-2">
               <input ref={refDate} type="date" defaultValue={ch.dateDepart || ""}
+                onClick={(e) => { try { if (e.currentTarget.showPicker) e.currentTarget.showPicker(); } catch (_) {} }}
                 onChange={(e) => onDate(ch.id, e.target.value)} onBlur={(e) => onDate(ch.id, e.target.value)}
-                className="flex-1 rounded-lg border-2 border-slate-200 p-2 text-base focus:border-emerald-500 focus:outline-none" />
+                className="flex-1 rounded-lg border-2 border-slate-200 px-3 text-base focus:border-emerald-500 focus:outline-none"
+                style={{ minHeight: "48px", WebkitAppearance: "none", appearance: "none", background: "#fff" }} />
               <button onClick={() => { if (refDate.current) refDate.current.value = ""; onDate(ch.id, null); }}
-                className="px-3 py-2 rounded-lg text-slate-500 border border-slate-200 text-sm font-semibold">Effacer</button>
+                className="px-3 rounded-lg text-slate-500 border border-slate-200 text-sm font-semibold" style={{ minHeight: "48px" }}>Effacer</button>
             </div>
           ) : (
             <div className="text-base font-bold text-slate-700">
@@ -318,6 +355,38 @@ function ModalChambre({ ch, onChange, onClose, onSejour, estManager, onDate }) {
               <span className="block text-[11px] font-normal text-slate-400">Modifiable par le manager</span>
             </div>
           )}
+        </div>
+
+        {/* Assignation : modifiable par le manager, en lecture seule sinon */}
+        <div className="mb-4 rounded-xl bg-slate-50 border border-slate-200 p-3">
+          <div className="text-xs font-semibold text-slate-500 mb-1">👤 Assignée à</div>
+          {estManager ? (
+            <div className="flex items-center gap-2">
+              <input ref={refAssignee} list="liste-preposes" defaultValue={ch.assignee || ""} placeholder="Nom de la préposée..."
+                autoCapitalize="words" autoCorrect="off"
+                onChange={(e) => onAssignee(ch.id, e.target.value)} onBlur={(e) => onAssignee(ch.id, e.target.value)}
+                className="flex-1 rounded-lg border-2 border-slate-200 px-3 text-base focus:border-emerald-500 focus:outline-none"
+                style={{ minHeight: "48px", background: "#fff" }} />
+              <datalist id="liste-preposes">
+                {(nomsConnus || []).map((n) => <option key={n} value={n} />)}
+              </datalist>
+              <button onClick={() => { if (refAssignee.current) refAssignee.current.value = ""; onAssignee(ch.id, null); }}
+                className="px-3 rounded-lg text-slate-500 border border-slate-200 text-sm font-semibold" style={{ minHeight: "48px" }}>Effacer</button>
+            </div>
+          ) : (
+            <div className="text-base font-bold text-slate-700">
+              {ch.assignee || "Non assignée"}
+              <span className="block text-[11px] font-normal text-slate-400">Modifiable par le manager</span>
+            </div>
+          )}
+        </div>
+
+        {/* Note libre : modifiable par tous */}
+        <div className="mb-4">
+          <div className="text-xs font-semibold text-slate-500 mb-1">📝 Note</div>
+          <textarea ref={refNote} defaultValue={ch.note || ""} rows={2} placeholder="Note libre (objet trouvé, demande client...)"
+            onBlur={(e) => onNote(ch.id, e.target.value)}
+            className="w-full rounded-xl border-2 border-slate-200 p-3 text-base focus:border-emerald-500 focus:outline-none resize-none" />
         </div>
 
         {mode === "actions" && (
@@ -571,9 +640,32 @@ function App() {
   const [authManager, setAuthManager] = useState(false);
   const [loginOuvert, setLoginOuvert] = useState(false);
   const [filtre, setFiltre] = useState("tous");
+  const [filtrePreposee, setFiltrePreposee] = useState("tous");
+  const [tri, setTri] = useState("numero"); // numero | priorite
   const [selection, setSelection] = useState(null);
   const [heure, setHeure] = useState(new Date());
   const [connecte, setConnecte] = useState(false);
+  const [alerte, setAlerte] = useState(null);
+  const prevProb = React.useRef(null);
+
+  // Notifications manager : détecte les nouveaux problèmes signalés
+  useEffect(() => {
+    const ids = Object.values(chambres).filter((c) => c.statut === "probleme").map((c) => c.id);
+    if (prevProb.current === null) { prevProb.current = ids; return; }
+    const nouveaux = ids.filter((id) => !prevProb.current.includes(id));
+    prevProb.current = ids;
+    if (nouveaux.length && authManager) {
+      const noms = nouveaux.join(", ");
+      setAlerte("Problème signalé — Chambre " + noms);
+      bip();
+      try {
+        if ("Notification" in window && Notification.permission === "granted") {
+          new Notification("⚠ Problème signalé", { body: "Chambre " + noms, tag: "probleme-" + noms });
+        }
+      } catch (e) {}
+      setTimeout(() => setAlerte(null), 8000);
+    }
+  }, [chambres, authManager]);
 
   // Sauvegarde locale (cache hors ligne)
   useEffect(() => { sauvegarder(chambres); }, [chambres]);
@@ -605,6 +697,18 @@ function App() {
 
   const changerSejour = (id, sejour) => {
     const maj = { ...chambres[id], sejour, maj: Date.now() };
+    if (SYNC_ACTIF && dbChambres) dbChambres.child(String(id)).set(maj);
+    setChambres((prev) => ({ ...prev, [id]: maj }));
+  };
+
+  const changerAssignee = (id, assignee) => {
+    const maj = { ...chambres[id], assignee: (assignee && assignee.trim()) ? assignee.trim() : null, maj: Date.now() };
+    if (SYNC_ACTIF && dbChambres) dbChambres.child(String(id)).set(maj);
+    setChambres((prev) => ({ ...prev, [id]: maj }));
+  };
+
+  const changerNote = (id, note) => {
+    const maj = { ...chambres[id], note: (note || "").trim(), maj: Date.now() };
     if (SYNC_ACTIF && dbChambres) dbChambres.child(String(id)).set(maj);
     setChambres((prev) => ({ ...prev, [id]: maj }));
   };
@@ -682,10 +786,31 @@ function App() {
   const compteur = (st) => Object.values(chambres).filter((c) => c.statut === st).length;
   const total = Object.keys(chambres).length;
   const progression = total ? Math.round((compteur("propre") / total) * 100) : 0;
-  const liste = Object.values(chambres).filter((c) => filtre === "tous" || c.statut === filtre);
+  const today = aujourdHuiISO();
+  const departsJour = Object.values(chambres).filter((c) => c.dateDepart === today).length;
+  const nomsConnus = [...new Set(Object.values(chambres).map((c) => c.assignee).filter(Boolean))].sort();
+
+  let liste = Object.values(chambres).filter((c) => {
+    if (filtrePreposee !== "tous" && c.assignee !== filtrePreposee) return false;
+    if (filtre === "tous") return true;
+    if (filtre === "departs_jour") return c.dateDepart === today;
+    return c.statut === filtre;
+  });
+  if (tri === "priorite") {
+    liste = [...liste].sort((a, b) => priorite(a, today) - priorite(b, today) || a.id - b.id);
+  }
 
   return (
     <div className="min-h-screen max-w-2xl mx-auto">
+      {/* Bannière d'alerte (nouveau problème) */}
+      {alerte && (
+        <div onClick={() => { setManager(true); setAlerte(null); }}
+          className="fixed top-3 left-1/2 -translate-x-1/2 z-[60] w-[92%] max-w-md cursor-pointer rounded-2xl bg-red-600 text-white px-4 py-3 shadow-2xl flex items-center justify-between gap-3 animate-pulse">
+          <span className="font-bold text-sm">⚠ {alerte}</span>
+          <span className="text-xs underline whitespace-nowrap">Voir</span>
+        </div>
+      )}
+
       {/* En-tête */}
       <header className="px-4 pt-5 pb-3 text-white shadow-lg" style={{ background: "linear-gradient(135deg, var(--foret), var(--foret2))" }}>
         <div className="flex items-center justify-between">
@@ -747,12 +872,23 @@ function App() {
               ))}
             </div>
             <div className="flex gap-2 overflow-x-auto px-4 py-2">
-              {[["tous", "Tous"], ...ORDRE_STATUTS.map((s) => [s, STATUTS[s].court])].map(([k, lbl]) => (
+              {[["tous", "Tous"], ["departs_jour", "🛎 Départs auj. (" + departsJour + ")"], ...ORDRE_STATUTS.map((s) => [s, STATUTS[s].court])].map(([k, lbl]) => (
                 <button key={k} onClick={() => setFiltre(k)}
                   className={"whitespace-nowrap px-4 py-2 rounded-full text-sm font-semibold transition active:scale-95 " + (filtre === k ? "bg-emerald-900 text-white" : "bg-white text-slate-600 border border-slate-200")}>
                   {lbl}
                 </button>
               ))}
+            </div>
+            <div className="flex gap-2 items-center px-4 pb-2">
+              <select value={filtrePreposee} onChange={(e) => setFiltrePreposee(e.target.value)}
+                className="rounded-full px-3 py-1.5 text-sm font-semibold bg-white text-slate-600 border border-slate-200 max-w-[55%]">
+                <option value="tous">👤 Toutes les préposées</option>
+                {nomsConnus.map((n) => <option key={n} value={n}>{n}</option>)}
+              </select>
+              <button onClick={() => setTri(tri === "numero" ? "priorite" : "numero")}
+                className="whitespace-nowrap px-3 py-1.5 rounded-full text-sm font-semibold bg-white text-slate-600 border border-slate-200 active:scale-95 transition">
+                Tri : {tri === "numero" ? "N°" : "⚡ Priorité"}
+              </button>
             </div>
           </div>
 
@@ -780,11 +916,15 @@ function App() {
       )}
 
       {selection && (
-        <ModalChambre ch={chambres[selection.id]} onChange={changerStatut} onSejour={changerSejour} onDate={changerDate} estManager={authManager} onClose={() => setSelection(null)} />
+        <ModalChambre ch={chambres[selection.id]} onChange={changerStatut} onSejour={changerSejour} onDate={changerDate} onAssignee={changerAssignee} onNote={changerNote} nomsConnus={nomsConnus} estManager={authManager} onClose={() => setSelection(null)} />
       )}
 
       {loginOuvert && (
-        <ModalLogin onSuccess={() => { setAuthManager(true); setManager(true); setLoginOuvert(false); }} onClose={() => setLoginOuvert(false)} />
+        <ModalLogin onSuccess={() => {
+            setAuthManager(true); setManager(true); setLoginOuvert(false);
+            amorcerAudio();
+            try { if ("Notification" in window && Notification.permission === "default") Notification.requestPermission(); } catch (e) {}
+          }} onClose={() => setLoginOuvert(false)} />
       )}
     </div>
   );
