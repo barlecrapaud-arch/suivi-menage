@@ -1,5 +1,5 @@
 // Service worker — cache « app shell » + librairies CDN pour le mode hors ligne
-const CACHE = "suivi-menage-v7";
+const CACHE = "suivi-menage-v8";
 
 const A_PRECACHER = [
   "index.html",
