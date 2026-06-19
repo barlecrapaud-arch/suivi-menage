@@ -1,0 +1,1231 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<meta name="theme-color" content="#111111" />
+<title>Rose et Basilic — Suivi Ménage</title>
+<link rel="manifest" href="manifest-rosebasilic.json" />
+<link rel="apple-touch-icon" href="icon-rosebasilic.svg" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Rose et Basilic" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<style>
+  :root { --rose: #c2185b; --rose2: #d6537c; --beige: #f3ead7; --noir: #111111; }
+  * { -webkit-tap-highlight-color: transparent; }
+  body { background:#f7f1e6; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  ::-webkit-scrollbar { width: 0; height: 0; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect } = React;
+
+/* =======================================================================
+   CONFIGURATION FIREBASE  —  À REMPLIR (voir GUIDE-FIREBASE.md)
+   Colle ici la config de TON projet Firebase pour activer le partage
+   en temps réel entre tous les appareils. Tant que ce n'est pas rempli,
+   l'app fonctionne en mode local (données par appareil).
+   ======================================================================= */
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSy...",
+  authDomain: "rose-et-basilic-menage.firebaseapp.com",
+  databaseURL: "https://rose-et-basilic-menage-default-rtdb.firebaseio.com",
+  projectId: "rose-et-basilic-menage",
+};
+
+/* =======================================================================
+   ACCÈS MODE MANAGER  —  identifiant et mot de passe
+   Modifie ces deux valeurs pour choisir tes accès au mode Manager.
+   ======================================================================= */
+const MANAGER_AUTH = { identifiant: "manager", motDePasse: "basilic7" };
+
+const SYNC_ACTIF = FIREBASE_CONFIG.databaseURL.indexOf("VOTRE_PROJET") === -1;
+let dbChambres = null, dbPersonnel = null, dbReservations = null;
+if (SYNC_ACTIF && window.firebase) {
+  try {
+    firebase.initializeApp(FIREBASE_CONFIG);
+    dbChambres = firebase.database().ref("chambres");
+    dbPersonnel = firebase.database().ref("personnel");
+    dbReservations = firebase.database().ref("reservations");
+  } catch (e) { console.error("Firebase:", e); }
+}
+
+const JOURS = [["lun", "Lun"], ["mar", "Mar"], ["mer", "Mer"], ["jeu", "Jeu"], ["ven", "Ven"], ["sam", "Sam"], ["dim", "Dim"]];
+const STORAGE_KEY_PERSONNEL = "rose_basilic_personnel_v1";
+function chargerPersonnel() {
+  try {
+    const brut = localStorage.getItem(STORAGE_KEY_PERSONNEL);
+    if (brut) { const d = JSON.parse(brut); if (d && typeof d === "object") return d; }
+  } catch (e) {}
+  return {};
+}
+
+const STORAGE_KEY_RESERVATIONS = "rose_basilic_reservations_v1";
+function chargerReservations() {
+  try {
+    const brut = localStorage.getItem(STORAGE_KEY_RESERVATIONS);
+    if (brut) { const d = JSON.parse(brut); if (d && typeof d === "object") return d; }
+  } catch (e) {}
+  return {};
+}
+
+// ---------- Configuration des statuts ----------
+const STATUTS = {
+  propre:       { label: "Propre / Prête",     court: "Prête",        couleur: "#22c55e", bg: "#dcfce7", texte: "#14532d", icone: "✓" },
+  a_faire:      { label: "À faire",            court: "À faire",      couleur: "#3b82f6", bg: "#dbeafe", texte: "#1e3a8a", icone: "•" },
+  en_cours:     { label: "En cours de ménage", court: "En cours",     couleur: "#f59e0b", bg: "#fef3c7", texte: "#78350f", icone: "↻" },
+  probleme:     { label: "Problème signalé",   court: "Problème",     couleur: "#ef4444", bg: "#fee2e2", texte: "#7f1d1d", icone: "!" },
+  ne_pas_faire: { label: "Ne pas faire (occupée)", court: "Ne pas faire", couleur: "#6b7280", bg: "#f1f5f9", texte: "#475569", icone: "⛔" },
+};
+const ORDRE_STATUTS = ["propre", "a_faire", "en_cours", "probleme", "ne_pas_faire"];
+const TYPES_PROBLEME = ["Plomberie", "Électricité", "Linge manquant", "Autre"];
+
+// Type de séjour : départ = ménage complet, séjour = rafraîchissement
+const SEJOURS = {
+  depart: { label: "Départ (ménage complet)", court: "Départ", icone: "🛎", bg: "#111111", texte: "#ffffff" },
+  sejour: { label: "Séjour (rafraîchissement)", court: "Séjour", icone: "✦", bg: "#f3ead7", texte: "#5b3a29" },
+};
+const STORAGE_KEY = "rose_basilic_menage_v1";
+
+// ---------- Données initiales : 7 chambres (1 à 7), un seul étage ----------
+const ETAGES = [1];
+function genererChambres() {
+  const chambres = {};
+  for (let n = 1; n <= 7; n++) {
+    chambres[n] = { id: n, etage: 1, statut: "a_faire", sejour: "depart", dateDepart: null, assignee: null, note: "", probleme: null, maj: Date.now(), employe: null, debut: null, fin: null };
+  }
+  return chambres;
+}
+
+function chargerEtat() {
+  try {
+    const brut = localStorage.getItem(STORAGE_KEY);
+    if (brut) {
+      const data = JSON.parse(brut);
+      if (data && data.chambres) return data.chambres;
+    }
+  } catch (e) {}
+  return genererChambres();
+}
+
+function sauvegarder(chambres) {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ chambres })); } catch (e) {}
+}
+
+function heureCourte(ts) {
+  if (!ts) return "";
+  const d = new Date(ts);
+  return d.toLocaleTimeString("fr-CA", { hour: "2-digit", minute: "2-digit" });
+}
+
+// Date du jour au format "AAAA-MM-JJ" (zéros inclus) pour comparer aux dates de départ
+function aujourdHuiISO() {
+  const d = new Date();
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+}
+
+// Formate une date "AAAA-MM-JJ" en texte court (ex. « 18 juin »)
+function formatDateDepart(s) {
+  if (!s) return "";
+  const p = s.split("-").map(Number);
+  if (p.length < 3) return s;
+  return new Date(p[0], p[1] - 1, p[2]).toLocaleDateString("fr-CA", { day: "numeric", month: "short" });
+}
+
+// Mois courant au format "AAAA-MM" (pour le sélecteur de mois des réservations)
+function moisCourantISO() {
+  const d = new Date();
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
+}
+
+// Une réservation (arrivée/départ "AAAA-MM-JJ") chevauche-t-elle le mois "AAAA-MM" ?
+function reservationDansMois(r, moisISO) {
+  if (!r.arrivee && !r.depart) return false;
+  const debutMois = moisISO + "-01";
+  const [a, m] = moisISO.split("-").map(Number);
+  const finMois = moisISO + "-" + String(new Date(a, m, 0).getDate()).padStart(2, "0");
+  const arr = r.arrivee || r.depart;
+  const dep = r.depart || r.arrivee;
+  return arr <= finMois && dep >= debutMois;
+}
+
+// Son d'alerte (bip) via Web Audio
+let _audioCtx = null;
+function amorcerAudio() {
+  try {
+    _audioCtx = _audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (_audioCtx.state === "suspended") _audioCtx.resume();
+  } catch (e) {}
+}
+function bip() {
+  try {
+    amorcerAudio();
+    if (!_audioCtx) return;
+    const o = _audioCtx.createOscillator(), g = _audioCtx.createGain();
+    o.type = "sine"; o.frequency.value = 880; o.connect(g); g.connect(_audioCtx.destination);
+    g.gain.setValueAtTime(0.001, _audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.3, _audioCtx.currentTime + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.001, _audioCtx.currentTime + 0.45);
+    o.start(); o.stop(_audioCtx.currentTime + 0.45);
+  } catch (e) {}
+}
+
+// Rang de priorité du ménage (0 = le plus urgent)
+function priorite(c, today) {
+  if (c.statut === "a_faire" && c.dateDepart === today) return 0; // départ du jour à nettoyer
+  if (c.statut === "en_cours") return 1;                          // finir ce qui est commencé
+  if (c.statut === "a_faire") return 2;                           // à faire (sans départ aujourd'hui)
+  if (c.statut === "probleme") return 3;
+  if (c.statut === "ne_pas_faire") return 4;
+  return 5;                                                       // propre
+}
+
+function formatMs(ms) {
+  if (ms == null || ms < 0) return "—";
+  const totMin = Math.floor(ms / 60000);
+  const h = Math.floor(totMin / 60);
+  const min = totMin % 60;
+  const sec = Math.floor((ms % 60000) / 1000);
+  if (h > 0) return h + " h " + String(min).padStart(2, "0") + " min";
+  if (totMin > 0) return min + " min " + String(sec).padStart(2, "0") + " s";
+  return sec + " s";
+}
+
+function dureeTexte(debut, fin) {
+  if (!debut) return "—";
+  return formatMs((fin || Date.now()) - debut);
+}
+
+// Agrège les ménages terminés par préposée : { nom: { count, totalMs } }
+function totauxParPreposee(chambres) {
+  const acc = {};
+  Object.values(chambres).forEach((c) => {
+    if (c.statut === "propre" && c.debut && c.fin && c.employe) {
+      if (!acc[c.employe]) acc[c.employe] = { count: 0, totalMs: 0 };
+      acc[c.employe].count += 1;
+      acc[c.employe].totalMs += c.fin - c.debut;
+    }
+  });
+  return Object.entries(acc)
+    .map(([nom, v]) => ({ nom, ...v }))
+    .sort((a, b) => b.totalMs - a.totalMs);
+}
+
+// ---------- Export PDF du rapport de fin de journée ----------
+function exporterPDF(chambres) {
+  if (!window.jspdf || !window.jspdf.jsPDF) { alert("Librairie PDF non chargée. Vérifiez votre connexion Internet."); return; }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF();
+  const now = new Date();
+  const dateStr = now.toLocaleDateString("fr-CA", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+  const heureStr = now.toLocaleTimeString("fr-CA", { hour: "2-digit", minute: "2-digit" });
+
+  const compteur = (st) => Object.values(chambres).filter((c) => c.statut === st).length;
+  const terminees = Object.values(chambres).filter((c) => c.statut === "propre" && c.debut && c.fin).sort((a, b) => a.id - b.id);
+  const problemes = Object.values(chambres).filter((c) => c.statut === "probleme").sort((a, b) => a.id - b.id);
+  const totaux = totauxParPreposee(chambres);
+
+  // En-tête
+  doc.setFillColor(17, 17, 17);
+  doc.rect(0, 0, 210, 26, "F");
+  doc.setTextColor(255, 255, 255);
+  doc.setFontSize(16); doc.setFont(undefined, "bold");
+  doc.text("Rose et Basilic — Rapport d'entretien", 14, 12);
+  doc.setFontSize(10); doc.setFont(undefined, "normal");
+  doc.text(dateStr + "  ·  " + heureStr, 14, 19);
+
+  let y = 34;
+  doc.setTextColor(30, 41, 59);
+  doc.setFontSize(12); doc.setFont(undefined, "bold");
+  doc.text("Résumé", 14, y); y += 2;
+  doc.autoTable({
+    startY: y + 2,
+    head: [["Prêtes", "À faire", "En cours", "Problèmes"]],
+    body: [[compteur("propre"), compteur("a_faire"), compteur("en_cours"), compteur("probleme")]],
+    theme: "grid", headStyles: { fillColor: [194, 24, 91] }, styles: { halign: "center", fontSize: 11 },
+  });
+  y = doc.lastAutoTable.finalY + 6;
+
+  const tempsMoyen = terminees.length ? terminees.reduce((a, c) => a + (c.fin - c.debut), 0) / terminees.length : 0;
+  const departsRestants = Object.values(chambres).filter((c) => (c.sejour || "depart") === "depart" && c.statut !== "propre").length;
+  doc.setFontSize(10); doc.setFont(undefined, "normal"); doc.setTextColor(71, 85, 105);
+  doc.text("Temps moyen par chambre : " + (terminees.length ? formatMs(tempsMoyen) : "—")
+    + "     |     Départs restants : " + departsRestants
+    + "     |     Chambres terminées : " + terminees.length, 14, y);
+  doc.setTextColor(30, 41, 59);
+  y += 8;
+
+  // Totaux par préposée
+  doc.setFontSize(12); doc.setFont(undefined, "bold");
+  doc.text("Temps total par préposée", 14, y);
+  doc.autoTable({
+    startY: y + 2,
+    head: [["Préposée", "Chambres faites", "Temps total"]],
+    body: totaux.length ? totaux.map((t) => [t.nom, t.count, formatMs(t.totalMs)]) : [["Aucune donnée", "—", "—"]],
+    theme: "striped", headStyles: { fillColor: [194, 24, 91] },
+  });
+  y = doc.lastAutoTable.finalY + 10;
+
+  // Ménages terminés
+  doc.setFontSize(12); doc.setFont(undefined, "bold");
+  doc.text("Ménages terminés", 14, y);
+  doc.autoTable({
+    startY: y + 2,
+    head: [["Chambre", "Séjour", "Préposée", "Début", "Fin", "Durée"]],
+    body: terminees.length ? terminees.map((c) => [
+      c.id, SEJOURS[c.sejour || "depart"].court, c.employe || "—", heureCourte(c.debut), heureCourte(c.fin), formatMs(c.fin - c.debut),
+    ]) : [["Aucun ménage terminé", "", "", "", "", ""]],
+    theme: "striped", headStyles: { fillColor: [34, 197, 94] },
+  });
+  y = doc.lastAutoTable.finalY + 10;
+
+  // Problèmes
+  doc.setFontSize(12); doc.setFont(undefined, "bold");
+  doc.text("Problèmes signalés", 14, y);
+  doc.autoTable({
+    startY: y + 2,
+    head: [["Chambre", "Type", "Description"]],
+    body: problemes.length ? problemes.map((c) => [
+      c.id, c.probleme ? c.probleme.type : "—", c.probleme ? c.probleme.desc || "—" : "—",
+    ]) : [["Aucun problème", "", ""]],
+    theme: "striped", headStyles: { fillColor: [239, 68, 68] },
+  });
+
+  doc.save("rapport-entretien-rose-et-basilic-" + now.toISOString().slice(0, 10) + ".pdf");
+}
+
+// ---------- Carte d'une chambre ----------
+function CarteChambre({ ch, onClick }) {
+  const s = STATUTS[ch.statut];
+  const sej = SEJOURS[ch.sejour || "depart"];
+  return (
+    <button
+      onClick={() => onClick(ch)}
+      className="relative flex flex-col items-center justify-center rounded-2xl bg-white shadow-sm active:scale-95 transition-transform aspect-square focus:outline-none overflow-hidden px-1"
+      style={{ borderLeft: `6px solid ${s.couleur}` }}
+    >
+      <span className="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded-md text-[9px] font-bold leading-none"
+        style={{ background: sej.bg, color: sej.texte }} title={sej.label}>
+        {sej.icone}
+      </span>
+      {ch.note && <span className="absolute top-1.5 left-1.5 text-[11px] leading-none" title="Note">📝</span>}
+      <span className="text-3xl font-extrabold text-slate-800 leading-none">{ch.id}</span>
+      <span
+        className="mt-2 px-2 py-0.5 rounded-lg text-[10px] font-semibold leading-tight text-center max-w-full"
+        style={{ background: s.bg, color: s.texte }}
+      >
+        {s.icone} {s.court}
+      </span>
+      {ch.assignee && <span className="mt-1 text-[10px] font-semibold truncate max-w-[90%] px-1" style={{ color: "var(--rose)" }}>👤 {ch.assignee}</span>}
+      {ch.dateDepart
+        ? <span className="mt-0.5 text-[10px] font-semibold text-slate-500">🛎 {formatDateDepart(ch.dateDepart)}</span>
+        : (!ch.assignee && ch.maj && <span className="mt-1 text-[10px] text-slate-400">{heureCourte(ch.maj)}</span>)}
+    </button>
+  );
+}
+
+// ---------- Modal d'actions employé ----------
+function ModalChambre({ ch, onChange, onClose, onSejour, estManager, onDate, onAssignee, nomsConnus, onNote }) {
+  const [mode, setMode] = useState("actions"); // actions | probleme | debut
+  const [typeP, setTypeP] = useState(TYPES_PROBLEME[0]);
+  const [desc, setDesc] = useState("");
+  const [nom, setNom] = useState(ch.employe || "");
+  const refDate = React.useRef(null);
+  const refAssignee = React.useRef(null);
+  const refNote = React.useRef(null);
+  const s = STATUTS[ch.statut];
+
+  const maj = (statut, extra = {}) => { onChange(ch.id, statut, extra); onClose(); };
+  const demarrer = () => {
+    if (!nom.trim()) return;
+    onChange(ch.id, "en_cours", { employe: nom.trim(), debut: Date.now(), fin: null });
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 p-0 sm:p-4" onClick={onClose}>
+      <div className="w-full sm:max-w-md bg-white rounded-t-3xl sm:rounded-3xl p-5 pb-8 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h2 className="text-2xl font-extrabold text-slate-800">Chambre {ch.id}</h2>
+            <span className="inline-flex items-center gap-1 mt-1 px-2 py-0.5 rounded-full text-xs font-semibold" style={{ background: s.bg, color: s.texte }}>
+              {s.icone} {s.label}
+            </span>
+          </div>
+          <button onClick={onClose} className="text-slate-400 text-3xl leading-none px-2">×</button>
+        </div>
+
+        {ch.probleme && (
+          <div className="mb-4 rounded-xl bg-red-50 border border-red-200 p-3 text-sm text-red-800">
+            <strong>{ch.probleme.type}</strong>{ch.probleme.desc ? " — " + ch.probleme.desc : ""}
+          </div>
+        )}
+
+        {/* Date de départ : modifiable par le manager, en lecture seule sinon */}
+        <div className="mb-4 rounded-xl bg-[#f7f1e6] border border-[#e8dcc4] p-3">
+          <div className="text-xs font-semibold text-slate-500 mb-1">🛎 Date de départ</div>
+          {estManager ? (
+            <div className="flex items-center gap-2">
+              <input ref={refDate} type="date" defaultValue={ch.dateDepart || ""}
+                onClick={(e) => { try { if (e.currentTarget.showPicker) e.currentTarget.showPicker(); } catch (_) {} }}
+                onChange={(e) => onDate(ch.id, e.target.value)} onBlur={(e) => onDate(ch.id, e.target.value)}
+                className="flex-1 rounded-lg border-2 border-slate-200 px-3 text-base focus:outline-none"
+                style={{ minHeight: "48px", WebkitAppearance: "none", appearance: "none", background: "#fff", borderColor: "#e8dcc4" }} />
+              <button onClick={() => { if (refDate.current) refDate.current.value = ""; onDate(ch.id, null); }}
+                className="px-3 rounded-lg text-slate-500 border border-slate-200 text-sm font-semibold" style={{ minHeight: "48px" }}>Effacer</button>
+            </div>
+          ) : (
+            <div className="text-base font-bold text-slate-700">
+              {ch.dateDepart ? formatDateDepart(ch.dateDepart) : "Non définie"}
+              <span className="block text-[11px] font-normal text-slate-400">Modifiable par le manager</span>
+            </div>
+          )}
+        </div>
+
+        {/* Assignation : modifiable par le manager, en lecture seule sinon */}
+        <div className="mb-4 rounded-xl bg-[#f7f1e6] border border-[#e8dcc4] p-3">
+          <div className="text-xs font-semibold text-slate-500 mb-1">👤 Assignée à</div>
+          {estManager ? (
+            <div className="flex items-center gap-2">
+              <input ref={refAssignee} list="liste-preposes" defaultValue={ch.assignee || ""} placeholder="Nom de la préposée..."
+                autoCapitalize="words" autoCorrect="off"
+                onChange={(e) => onAssignee(ch.id, e.target.value)} onBlur={(e) => onAssignee(ch.id, e.target.value)}
+                className="flex-1 rounded-lg border-2 px-3 text-base focus:outline-none"
+                style={{ minHeight: "48px", background: "#fff", borderColor: "#e8dcc4" }} />
+              <datalist id="liste-preposes">
+                {(nomsConnus || []).map((n) => <option key={n} value={n} />)}
+              </datalist>
+              <button onClick={() => { if (refAssignee.current) refAssignee.current.value = ""; onAssignee(ch.id, null); }}
+                className="px-3 rounded-lg text-slate-500 border border-slate-200 text-sm font-semibold" style={{ minHeight: "48px" }}>Effacer</button>
+            </div>
+          ) : (
+            <div className="text-base font-bold text-slate-700">
+              {ch.assignee || "Non assignée"}
+              <span className="block text-[11px] font-normal text-slate-400">Modifiable par le manager</span>
+            </div>
+          )}
+        </div>
+
+        {/* Note libre : modifiable par tous */}
+        <div className="mb-4">
+          <div className="text-xs font-semibold text-slate-500 mb-1">📝 Note</div>
+          <textarea ref={refNote} defaultValue={ch.note || ""} rows={2} placeholder="Note libre (objet trouvé, demande client...)"
+            onBlur={(e) => onNote(ch.id, e.target.value)}
+            className="w-full rounded-xl border-2 border-slate-200 p-3 text-base focus:outline-none resize-none" />
+        </div>
+
+        {mode === "actions" && (
+          <div className="flex flex-col gap-3">
+            <div>
+              <div className="text-xs font-semibold text-slate-500 mb-1.5">Type de séjour</div>
+              <div className="grid grid-cols-2 gap-2">
+                {["depart", "sejour"].map((k) => (
+                  <button key={k} onClick={() => onSejour(ch.id, k)}
+                    className={"py-2.5 rounded-xl text-sm font-bold border-2 transition flex items-center justify-center gap-1 " + ((ch.sejour || "depart") === k ? "text-white" : "border-slate-200 text-slate-500")}
+                    style={(ch.sejour || "depart") === k ? { borderColor: "var(--rose)", background: "var(--rose)" } : {}}>
+                    {SEJOURS[k].icone} {SEJOURS[k].court}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <button onClick={() => setMode("debut")} className="w-full py-4 rounded-2xl text-white text-lg font-bold shadow active:scale-95 transition" style={{ background: "#f59e0b" }}>
+              ↻ Commencer le ménage
+            </button>
+            <button onClick={() => maj("propre", { fin: Date.now() })} className="w-full py-4 rounded-2xl text-white text-lg font-bold shadow active:scale-95 transition" style={{ background: "#22c55e" }}>
+              ✓ Ménage terminé
+            </button>
+            <button onClick={() => setMode("probleme")} className="w-full py-4 rounded-2xl text-white text-lg font-bold shadow active:scale-95 transition" style={{ background: "#ef4444" }}>
+              ! Signaler un problème
+            </button>
+            <button onClick={() => maj("a_faire", { employe: null, debut: null, fin: null })} className="w-full py-3 rounded-2xl text-blue-700 text-base font-semibold border-2 border-blue-200 active:scale-95 transition">
+              • Remettre « À faire »
+            </button>
+          </div>
+        )}
+
+        {mode === "debut" && (
+          <div className="flex flex-col gap-3">
+            <label className="text-sm font-semibold text-slate-600">Préposée à l'entretien</label>
+            <input value={nom} onChange={(e) => setNom(e.target.value)} placeholder="Nom de la préposée..." autoFocus
+              className="w-full rounded-xl border-2 border-slate-200 p-3 text-base focus:border-amber-400 focus:outline-none" />
+            <button onClick={demarrer} disabled={!nom.trim()}
+              className="w-full py-4 rounded-2xl text-white text-lg font-bold shadow active:scale-95 transition disabled:opacity-40"
+              style={{ background: "#f59e0b" }}>
+              ↻ Démarrer le chrono
+            </button>
+            <button onClick={() => setMode("actions")} className="w-full py-2 text-slate-500 font-semibold">← Retour</button>
+          </div>
+        )}
+
+        {mode === "probleme" && (
+          <div className="flex flex-col gap-3">
+            <label className="text-sm font-semibold text-slate-600">Type de problème</label>
+            <div className="grid grid-cols-2 gap-2">
+              {TYPES_PROBLEME.map((t) => (
+                <button key={t} onClick={() => setTypeP(t)}
+                  className={"py-3 rounded-xl text-sm font-semibold border-2 transition " + (typeP === t ? "border-red-500 bg-red-50 text-red-700" : "border-slate-200 text-slate-600")}>
+                  {t}
+                </button>
+              ))}
+            </div>
+            <label className="text-sm font-semibold text-slate-600 mt-1">Description courte</label>
+            <textarea value={desc} onChange={(e) => setDesc(e.target.value)} rows={3} placeholder="Ex : fuite sous le lavabo..."
+              className="w-full rounded-xl border-2 border-slate-200 p-3 text-base focus:border-red-400 focus:outline-none resize-none" />
+            <button onClick={() => maj("probleme", { probleme: { type: typeP, desc: desc.trim(), maj: Date.now() } })}
+              className="w-full py-4 rounded-2xl text-white text-lg font-bold shadow active:scale-95 transition" style={{ background: "#ef4444" }}>
+              Valider le signalement
+            </button>
+            <button onClick={() => setMode("actions")} className="w-full py-2 text-slate-500 font-semibold">← Retour</button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------- Vue Manager : liste des problèmes ----------
+function VueManager({ chambres, onResoudre, maintenant, onDeconnexion, onReinitialiser }) {
+  const problemes = Object.values(chambres).filter((c) => c.statut === "probleme");
+  const enCours = Object.values(chambres).filter((c) => c.statut === "en_cours" && c.debut);
+  const terminees = Object.values(chambres)
+    .filter((c) => c.statut === "propre" && c.debut && c.fin)
+    .sort((a, b) => b.fin - a.fin);
+  const totaux = totauxParPreposee(chambres);
+  const tousLes = Object.values(chambres);
+  const tempsMoyenMs = terminees.length ? terminees.reduce((a, c) => a + (c.fin - c.debut), 0) / terminees.length : 0;
+  const restantes = tousLes.filter((c) => c.statut === "a_faire" || c.statut === "en_cours").length;
+  const departsRestants = tousLes.filter((c) => (c.sejour || "depart") === "depart" && c.statut !== "propre").length;
+  const stats = [
+    { val: terminees.length, lbl: "Terminées", icone: "✓", coul: "#22c55e" },
+    { val: terminees.length ? formatMs(tempsMoyenMs) : "—", lbl: "Temps moyen", icone: "⏱", coul: "#111111" },
+    { val: restantes, lbl: "Restantes", icone: "📋", coul: "#3b82f6" },
+    { val: departsRestants, lbl: "Départs restants", icone: "🛎", coul: "#c2185b" },
+  ];
+  return (
+    <div className="px-4 pb-24">
+      {/* Export PDF + déconnexion */}
+      <div className="flex gap-2 mt-3 mb-4">
+        <button onClick={() => exporterPDF(chambres)}
+          className="flex-1 py-4 rounded-2xl text-white text-base font-bold shadow active:scale-95 transition flex items-center justify-center gap-2"
+          style={{ background: "linear-gradient(135deg, var(--noir), #2a2a2a)" }}>
+          ⬇ Exporter le rapport PDF
+        </button>
+        <button onClick={onDeconnexion} title="Déconnexion"
+          className="px-4 py-4 rounded-2xl bg-white text-slate-600 border border-slate-200 font-bold active:scale-95 transition">
+          🔒
+        </button>
+      </div>
+
+      <button onClick={() => { if (confirm("Remettre TOUTES les chambres en « À faire » ? (réinitialisation de la journée)")) onReinitialiser(); }}
+        className="w-full mb-6 py-3 rounded-2xl bg-white text-blue-700 border-2 border-blue-200 text-sm font-bold active:scale-95 transition">
+        ↺ Réinitialiser la journée
+      </button>
+
+      {/* Statistiques */}
+      <h2 className="text-lg font-bold text-slate-700 mb-3">Statistiques</h2>
+      <div className="grid grid-cols-2 gap-3 mb-6">
+        {stats.map((s) => (
+          <div key={s.lbl} className="rounded-2xl bg-white p-4 shadow-sm border-l-[6px]" style={{ borderColor: s.coul }}>
+            <div className="text-2xl font-extrabold text-slate-800 tabular-nums">{s.icone} {s.val}</div>
+            <div className="text-xs text-slate-500 mt-0.5">{s.lbl}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Temps total par préposée */}
+      <h2 className="text-lg font-bold text-slate-700 mb-3">Temps par préposée</h2>
+      {totaux.length === 0 && (
+        <div className="rounded-2xl bg-white p-6 text-center text-slate-400 shadow-sm mb-6">Aucun ménage terminé pour le moment.</div>
+      )}
+      <div className="flex flex-col gap-2 mb-6">
+        {totaux.map((t) => (
+          <div key={t.nom} className="rounded-xl bg-white px-4 py-3 shadow-sm border-l-[6px] flex items-center justify-between" style={{ borderColor: "var(--rose)" }}>
+            <div>
+              <div className="text-base font-extrabold text-slate-800">{t.nom}</div>
+              <div className="text-[11px] text-slate-400">{t.count} chambre{t.count > 1 ? "s" : ""} terminée{t.count > 1 ? "s" : ""}</div>
+            </div>
+            <div className="text-lg font-extrabold tabular-nums" style={{ color: "var(--rose)" }}>{formatMs(t.totalMs)}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Ménages en cours — chrono en direct */}
+      <h2 className="text-lg font-bold text-slate-700 mb-3 mt-2">Ménages en cours ({enCours.length})</h2>
+      {enCours.length === 0 && (
+        <div className="rounded-2xl bg-white p-6 text-center text-slate-400 shadow-sm mb-4">Aucun ménage en cours.</div>
+      )}
+      <div className="flex flex-col gap-3 mb-6">
+        {enCours.map((c) => (
+          <div key={c.id} className="rounded-2xl bg-white p-4 shadow-sm border-l-[6px] flex items-center justify-between" style={{ borderColor: "#f59e0b" }}>
+            <div>
+              <div className="text-xl font-extrabold text-slate-800">Chambre {c.id}</div>
+              <div className="text-sm font-semibold text-amber-700 mt-0.5">{c.employe || "—"}</div>
+              <div className="text-[11px] text-slate-400 mt-1">Débuté à {heureCourte(c.debut)}</div>
+            </div>
+            <div className="text-right">
+              <div className="text-2xl font-extrabold tabular-nums" style={{ color: "#b45309" }}>{dureeTexte(c.debut, null)}</div>
+              <div className="text-[10px] text-slate-400 uppercase tracking-wide">en cours</div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Ménages terminés du jour */}
+      <h2 className="text-lg font-bold text-slate-700 mb-3">Ménages terminés ({terminees.length})</h2>
+      {terminees.length === 0 && (
+        <div className="rounded-2xl bg-white p-6 text-center text-slate-400 shadow-sm mb-6">Aucun ménage terminé.</div>
+      )}
+      <div className="flex flex-col gap-2 mb-6">
+        {terminees.map((c) => (
+          <div key={c.id} className="rounded-xl bg-white px-4 py-3 shadow-sm border-l-[6px] flex items-center justify-between" style={{ borderColor: "#22c55e" }}>
+            <div>
+              <span className="text-base font-extrabold text-slate-800">Ch. {c.id}</span>
+              <span className="text-sm text-slate-500 ml-2">{c.employe || "—"}</span>
+            </div>
+            <div className="text-right">
+              <div className="text-sm font-bold text-green-700 tabular-nums">{dureeTexte(c.debut, c.fin)}</div>
+              <div className="text-[10px] text-slate-400">{heureCourte(c.debut)} → {heureCourte(c.fin)}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <h2 className="text-lg font-bold text-slate-700 mb-3">Problèmes signalés ({problemes.length})</h2>
+      {problemes.length === 0 && (
+        <div className="rounded-2xl bg-white p-8 text-center text-slate-400 shadow-sm">Aucun problème en cours 🎉</div>
+      )}
+      <div className="flex flex-col gap-3">
+        {problemes.map((c) => (
+          <div key={c.id} className="rounded-2xl bg-white p-4 shadow-sm border-l-[6px]" style={{ borderColor: "#ef4444" }}>
+            <div className="flex items-start justify-between">
+              <div>
+                <div className="text-xl font-extrabold text-slate-800">Chambre {c.id}</div>
+                <div className="text-sm font-semibold text-red-700 mt-1">{c.probleme ? c.probleme.type : "Problème"}</div>
+                {c.probleme && c.probleme.desc && <div className="text-sm text-slate-500 mt-0.5">{c.probleme.desc}</div>}
+                <div className="text-[11px] text-slate-400 mt-1">Signalé à {heureCourte(c.probleme ? c.probleme.maj : c.maj)}</div>
+              </div>
+            </div>
+            <div className="flex gap-2 mt-3">
+              <button onClick={() => onResoudre(c.id, "a_faire")} className="flex-1 py-3 rounded-xl bg-blue-600 text-white font-bold text-sm active:scale-95 transition">Résolu → À faire</button>
+              <button onClick={() => onResoudre(c.id, "propre")} className="flex-1 py-3 rounded-xl bg-green-600 text-white font-bold text-sm active:scale-95 transition">Résolu → Propre</button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ---------- Vue Réservations du mois ----------
+function VueReservations({ reservations, onAjouter, onModifier, onSupprimer }) {
+  const [mois, setMois] = useState(moisCourantISO());
+  const [ouvert, setOuvert] = useState(false);
+  const refNom = React.useRef(null);
+  const refChambre = React.useRef(null);
+  const refArrivee = React.useRef(null);
+  const refDepart = React.useRef(null);
+  const refCode = React.useRef(null);
+  const refNote = React.useRef(null);
+
+  const liste = Object.values(reservations)
+    .filter((r) => reservationDansMois(r, mois))
+    .sort((a, b) => (a.arrivee || "").localeCompare(b.arrivee || ""));
+
+  const ajouter = () => {
+    const nom = refNom.current ? refNom.current.value.trim() : "";
+    const arrivee = refArrivee.current ? refArrivee.current.value : "";
+    if (!nom || !arrivee) return;
+    onAjouter({
+      nom,
+      chambre: refChambre.current ? refChambre.current.value : "",
+      arrivee,
+      depart: refDepart.current ? refDepart.current.value : "",
+      code: refCode.current ? refCode.current.value.trim() : "",
+      note: refNote.current ? refNote.current.value.trim() : "",
+    });
+    [refNom, refChambre, refArrivee, refDepart, refCode, refNote].forEach((r) => { if (r.current) r.current.value = ""; });
+    setOuvert(false);
+  };
+
+  return (
+    <div className="px-4 pb-24">
+      <div className="flex items-center justify-between mt-2 mb-3">
+        <h2 className="text-lg font-bold text-slate-700">Réservations</h2>
+        <input type="month" value={mois} onChange={(e) => setMois(e.target.value)}
+          className="rounded-xl border-2 px-3 py-2 text-sm font-semibold focus:outline-none"
+          style={{ borderColor: "#e8dcc4", background: "#fff" }} />
+      </div>
+
+      <button onClick={() => setOuvert((v) => !v)}
+        className="w-full mb-4 py-3 rounded-2xl text-white text-sm font-bold active:scale-95 transition"
+        style={{ background: "linear-gradient(135deg, var(--noir), #2a2a2a)" }}>
+        {ouvert ? "× Annuler" : "+ Nouvelle réservation"}
+      </button>
+
+      {ouvert && (
+        <div className="rounded-2xl bg-white p-4 shadow-sm mb-5 flex flex-col gap-3">
+          <input ref={refNom} placeholder="Nom du client" autoCapitalize="words"
+            className="w-full rounded-xl border-2 border-slate-200 p-3 text-base focus:outline-none" />
+          <div className="grid grid-cols-2 gap-2">
+            <select ref={refChambre} defaultValue="" className="rounded-xl border-2 border-slate-200 p-3 text-base focus:outline-none">
+              <option value="">Chambre…</option>
+              {Array.from({ length: 7 }, (_, i) => i + 1).map((n) => <option key={n} value={n}>Chambre {n}</option>)}
+            </select>
+            <input ref={refCode} placeholder="Code de porte" inputMode="numeric"
+              className="rounded-xl border-2 border-slate-200 p-3 text-base focus:outline-none" />
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <div className="text-[11px] font-semibold text-slate-500 mb-1">Arrivée</div>
+              <input ref={refArrivee} type="date" className="w-full rounded-xl border-2 border-slate-200 p-3 text-base focus:outline-none" />
+            </div>
+            <div>
+              <div className="text-[11px] font-semibold text-slate-500 mb-1">Départ</div>
+              <input ref={refDepart} type="date" className="w-full rounded-xl border-2 border-slate-200 p-3 text-base focus:outline-none" />
+            </div>
+          </div>
+          <textarea ref={refNote} rows={2} placeholder="Note (optionnel)"
+            className="w-full rounded-xl border-2 border-slate-200 p-3 text-base focus:outline-none resize-none" />
+          <button onClick={ajouter} className="w-full py-3 rounded-2xl text-white font-bold active:scale-95 transition" style={{ background: "var(--rose)" }}>
+            Enregistrer la réservation
+          </button>
+        </div>
+      )}
+
+      {liste.length === 0 && (
+        <div className="rounded-2xl bg-white p-6 text-center text-slate-400 shadow-sm">Aucune réservation pour ce mois.</div>
+      )}
+
+      <div className="flex flex-col gap-3">
+        {liste.map((r) => (
+          <div key={r.id} className="rounded-2xl bg-white p-4 shadow-sm border-l-[6px]" style={{ borderColor: "var(--rose)" }}>
+            <div className="flex items-start justify-between gap-2">
+              <input defaultValue={r.nom || ""} onBlur={(e) => onModifier(r.id, "nom", e.target.value)}
+                className="text-lg font-extrabold text-slate-800 flex-1 rounded-lg border border-transparent hover:border-slate-200 focus:border-slate-200 px-1 -mx-1 focus:outline-none" />
+              <button onClick={() => { if (confirm("Supprimer la réservation de " + (r.nom || "ce client") + " ?")) onSupprimer(r.id); }}
+                className="px-2 py-1 rounded-lg text-red-500 border border-red-200 text-base active:scale-95 transition">🗑</button>
+            </div>
+            <div className="grid grid-cols-2 gap-2 mt-2">
+              <select defaultValue={r.chambre || ""} onChange={(e) => onModifier(r.id, "chambre", e.target.value)}
+                className="rounded-lg border-2 border-slate-200 p-2 text-sm focus:outline-none">
+                <option value="">Chambre…</option>
+                {Array.from({ length: 7 }, (_, i) => i + 1).map((n) => <option key={n} value={n}>Chambre {n}</option>)}
+              </select>
+              <input defaultValue={r.code || ""} placeholder="Code de porte" onBlur={(e) => onModifier(r.id, "code", e.target.value)}
+                className="rounded-lg border-2 border-slate-200 p-2 text-sm focus:outline-none" />
+            </div>
+            <div className="grid grid-cols-2 gap-2 mt-2">
+              <div>
+                <div className="text-[10px] font-semibold text-slate-500 mb-0.5">Arrivée</div>
+                <input type="date" defaultValue={r.arrivee || ""} onBlur={(e) => onModifier(r.id, "arrivee", e.target.value)}
+                  className="w-full rounded-lg border-2 border-slate-200 p-2 text-sm focus:outline-none" />
+              </div>
+              <div>
+                <div className="text-[10px] font-semibold text-slate-500 mb-0.5">Départ</div>
+                <input type="date" defaultValue={r.depart || ""} onBlur={(e) => onModifier(r.id, "depart", e.target.value)}
+                  className="w-full rounded-lg border-2 border-slate-200 p-2 text-sm focus:outline-none" />
+              </div>
+            </div>
+            <textarea defaultValue={r.note || ""} rows={1} placeholder="Note (optionnel)" onBlur={(e) => onModifier(r.id, "note", e.target.value)}
+              className="w-full mt-2 rounded-lg border-2 border-slate-200 p-2 text-sm focus:outline-none resize-none" />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ---------- Vue Personnel & horaire de la semaine ----------
+function VuePersonnel({ personnel, onAjouter, onModifier, onHoraire, onSupprimer }) {
+  const refNouveau = React.useRef(null);
+  const liste = Object.values(personnel).sort((a, b) => (a.nom || "").localeCompare(b.nom || ""));
+  const ajouter = () => {
+    const v = refNouveau.current ? refNouveau.current.value.trim() : "";
+    if (!v) return;
+    onAjouter(v);
+    refNouveau.current.value = "";
+  };
+  return (
+    <div className="px-4 pb-24">
+      <h2 className="text-lg font-bold text-slate-700 mb-3 mt-2">Personnel & horaire de la semaine</h2>
+
+      {/* Ajouter une préposée */}
+      <div className="flex gap-2 mb-4">
+        <input ref={refNouveau} placeholder="Nom d'une préposée..." autoCapitalize="words"
+          onKeyDown={(e) => { if (e.key === "Enter") ajouter(); }}
+          className="flex-1 rounded-xl border-2 border-slate-200 p-3 text-base focus:outline-none" />
+        <button onClick={ajouter} className="px-4 rounded-xl text-white font-bold active:scale-95 transition" style={{ background: "linear-gradient(135deg, var(--noir), #2a2a2a)" }}>+ Ajouter</button>
+      </div>
+
+      {liste.length === 0 && (
+        <div className="rounded-2xl bg-white p-6 text-center text-slate-400 shadow-sm">Aucune préposée. Ajoute-en une ci-dessus.</div>
+      )}
+
+      <div className="flex flex-col gap-3">
+        {liste.map((p) => (
+          <div key={p.id} className="rounded-2xl bg-white p-4 shadow-sm">
+            <div className="flex gap-2 items-center mb-2">
+              <input defaultValue={p.nom || ""} onBlur={(e) => onModifier(p.id, "nom", e.target.value)} placeholder="Nom"
+                className="flex-1 rounded-lg border-2 border-slate-200 p-2 text-base font-bold text-slate-800 focus:outline-none" />
+              <button onClick={() => { if (confirm("Supprimer " + (p.nom || "cette préposée") + " ?")) onSupprimer(p.id); }}
+                className="px-3 py-2 rounded-lg text-red-500 border border-red-200 text-lg active:scale-95 transition">🗑</button>
+            </div>
+            <input defaultValue={p.tel || ""} type="tel" onBlur={(e) => onModifier(p.id, "tel", e.target.value)} placeholder="Téléphone (optionnel)"
+              className="w-full rounded-lg border-2 border-slate-200 p-2 text-sm mb-3 focus:outline-none" />
+            <div className="grid grid-cols-7 gap-1">
+              {JOURS.map(([k, lbl]) => (
+                <div key={k} className="text-center">
+                  <div className="text-[10px] font-bold text-slate-500 mb-1">{lbl}</div>
+                  <input defaultValue={(p.horaire && p.horaire[k]) || ""} onBlur={(e) => onHoraire(p.id, k, e.target.value)} placeholder="—"
+                    className="w-full text-center text-[11px] rounded-lg border border-slate-200 py-1 px-0.5 focus:outline-none" />
+                </div>
+              ))}
+            </div>
+            <div className="text-[10px] text-slate-400 mt-2">Horaire par jour, ex. : « 8-16 », « 16-23 », « Congé ». Enregistré en quittant la case.</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ---------- Modal de connexion Manager ----------
+function ModalLogin({ onSuccess, onClose }) {
+  const refId = React.useRef(null);
+  const refMdp = React.useRef(null);
+  const [erreur, setErreur] = useState(false);
+
+  const valider = () => {
+    const idVal = (refId.current ? refId.current.value : "").trim().toLowerCase();
+    const mdpVal = (refMdp.current ? refMdp.current.value : "").trim();
+    if (idVal === MANAGER_AUTH.identifiant.trim().toLowerCase() && mdpVal === MANAGER_AUTH.motDePasse.trim()) {
+      onSuccess();
+    } else {
+      setErreur(true);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div className="w-full max-w-sm bg-white rounded-3xl p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-1">
+          <h2 className="text-2xl font-extrabold text-slate-800">🔒 Mode Manager</h2>
+          <button onClick={onClose} className="text-slate-400 text-3xl leading-none px-2">×</button>
+        </div>
+        <p className="text-sm text-slate-500 mb-4">Connexion requise pour accéder à la gestion.</p>
+        <div className="flex flex-col gap-3">
+          <input ref={refId} defaultValue={MANAGER_AUTH.identifiant} placeholder="Identifiant"
+            autoCapitalize="none" autoCorrect="off" autoComplete="off" spellCheck={false} onChange={() => setErreur(false)}
+            onKeyDown={(e) => { if (e.key === "Enter") valider(); }}
+            className="w-full rounded-xl border-2 border-slate-200 p-3 text-base focus:outline-none" />
+          <input ref={refMdp} type="password" placeholder="Mot de passe" autoFocus
+            autoCapitalize="none" autoCorrect="off" autoComplete="off" spellCheck={false} onChange={() => setErreur(false)}
+            onKeyDown={(e) => { if (e.key === "Enter") valider(); }}
+            className="w-full rounded-xl border-2 border-slate-200 p-3 text-base focus:outline-none" />
+          {erreur && <div className="text-sm font-semibold text-red-600 text-center">Identifiant ou mot de passe incorrect.</div>}
+          <button onClick={valider} className="w-full py-4 rounded-2xl text-white text-lg font-bold shadow active:scale-95 transition" style={{ background: "linear-gradient(135deg, var(--noir), #2a2a2a)" }}>
+            Se connecter
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------- Application principale ----------
+function App() {
+  const [chambres, setChambres] = useState(chargerEtat);
+  const [manager, setManager] = useState(false);
+  const [authManager, setAuthManager] = useState(false);
+  const [loginOuvert, setLoginOuvert] = useState(false);
+  const [filtre, setFiltre] = useState("tous");
+  const [filtrePreposee, setFiltrePreposee] = useState("tous");
+  const [tri, setTri] = useState("numero"); // numero | priorite
+  const [selection, setSelection] = useState(null);
+  const [heure, setHeure] = useState(new Date());
+  const [connecte, setConnecte] = useState(false);
+  const [alerte, setAlerte] = useState(null);
+  const [alerteAction, setAlerteAction] = useState(null);
+  const prevProb = React.useRef(null);
+  const prevResa = React.useRef(null);
+  const [personnel, setPersonnel] = useState(chargerPersonnel);
+  const [reservations, setReservations] = useState(chargerReservations);
+  const [vueManager, setVueManager] = useState("suivi"); // suivi | reservations | personnel
+
+  // Persistance + synchro du personnel
+  useEffect(() => { try { localStorage.setItem(STORAGE_KEY_PERSONNEL, JSON.stringify(personnel)); } catch (e) {} }, [personnel]);
+  useEffect(() => {
+    if (!SYNC_ACTIF || !dbPersonnel) return;
+    const cb = dbPersonnel.on("value", (s) => setPersonnel(s.val() || {}));
+    return () => dbPersonnel.off("value", cb);
+  }, []);
+  const appliquerPersonnel = (next) => {
+    setPersonnel(next);
+    if (SYNC_ACTIF && dbPersonnel) dbPersonnel.set(next);
+  };
+  const ajouterPrepose = (nom) => {
+    const id = "p" + Date.now();
+    appliquerPersonnel({ ...personnel, [id]: { id, nom, tel: "", horaire: {} } });
+  };
+  const modifierPrepose = (id, champ, valeur) => {
+    if (!personnel[id]) return;
+    appliquerPersonnel({ ...personnel, [id]: { ...personnel[id], [champ]: valeur } });
+  };
+  const modifierHoraire = (id, jour, valeur) => {
+    if (!personnel[id]) return;
+    const p = personnel[id];
+    appliquerPersonnel({ ...personnel, [id]: { ...p, horaire: { ...(p.horaire || {}), [jour]: valeur } } });
+  };
+  const supprimerPrepose = (id) => {
+    const next = { ...personnel }; delete next[id]; appliquerPersonnel(next);
+  };
+
+  // Persistance + synchro des réservations
+  useEffect(() => { try { localStorage.setItem(STORAGE_KEY_RESERVATIONS, JSON.stringify(reservations)); } catch (e) {} }, [reservations]);
+  useEffect(() => {
+    if (!SYNC_ACTIF || !dbReservations) return;
+    const cb = dbReservations.on("value", (s) => setReservations(s.val() || {}));
+    return () => dbReservations.off("value", cb);
+  }, []);
+  const appliquerReservations = (next) => {
+    setReservations(next);
+    if (SYNC_ACTIF && dbReservations) dbReservations.set(next);
+  };
+  const ajouterReservation = (donnees) => {
+    const id = "r" + Date.now();
+    appliquerReservations({ ...reservations, [id]: { id, ...donnees } });
+  };
+  const modifierReservation = (id, champ, valeur) => {
+    if (!reservations[id]) return;
+    appliquerReservations({ ...reservations, [id]: { ...reservations[id], [champ]: valeur } });
+  };
+  const supprimerReservation = (id) => {
+    const next = { ...reservations }; delete next[id]; appliquerReservations(next);
+  };
+
+  // Notifications manager : détecte les nouveaux problèmes signalés
+  useEffect(() => {
+    const ids = Object.values(chambres).filter((c) => c.statut === "probleme").map((c) => c.id);
+    if (prevProb.current === null) { prevProb.current = ids; return; }
+    const nouveaux = ids.filter((id) => !prevProb.current.includes(id));
+    prevProb.current = ids;
+    if (nouveaux.length && authManager) {
+      const noms = nouveaux.join(", ");
+      setAlerte("Problème signalé — Chambre " + noms);
+      setAlerteAction(() => () => setVueManager("suivi"));
+      bip();
+      try {
+        if ("Notification" in window && Notification.permission === "granted") {
+          new Notification("⚠ Problème signalé", { body: "Chambre " + noms, tag: "probleme-" + noms });
+        }
+      } catch (e) {}
+      setTimeout(() => setAlerte(null), 8000);
+    }
+  }, [chambres, authManager]);
+
+  // Notifications manager : détecte les nouvelles réservations entrées
+  useEffect(() => {
+    const ids = Object.keys(reservations);
+    if (prevResa.current === null) { prevResa.current = ids; return; }
+    const nouveaux = ids.filter((id) => !prevResa.current.includes(id));
+    prevResa.current = ids;
+    if (nouveaux.length && authManager) {
+      const noms = nouveaux.map((id) => reservations[id] && reservations[id].nom).filter(Boolean).join(", ");
+      setAlerte("Nouvelle réservation" + (noms ? " — " + noms : ""));
+      setAlerteAction(() => () => setVueManager("reservations"));
+      bip();
+      try {
+        if ("Notification" in window && Notification.permission === "granted") {
+          new Notification("📅 Nouvelle réservation", { body: noms || "Une réservation a été ajoutée", tag: "reservation-" + nouveaux.join("-") });
+        }
+      } catch (e) {}
+      setTimeout(() => setAlerte(null), 8000);
+    }
+  }, [reservations, authManager]);
+
+  // Sauvegarde locale (cache hors ligne)
+  useEffect(() => { sauvegarder(chambres); }, [chambres]);
+  useEffect(() => { const t = setInterval(() => setHeure(new Date()), 1000); return () => clearInterval(t); }, []);
+
+  // Synchronisation temps réel via Firebase
+  useEffect(() => {
+    if (!SYNC_ACTIF || !dbChambres) return;
+    const cb = dbChambres.on("value", (snap) => {
+      const val = snap.val();
+      if (val) setChambres(val);
+      else dbChambres.set(genererChambres()); // initialise la base au 1er lancement
+    });
+    const refCon = firebase.database().ref(".info/connected");
+    refCon.on("value", (s) => setConnecte(!!s.val()));
+    return () => { dbChambres.off("value", cb); refCon.off(); };
+  }, []);
+
+  const changerStatut = (id, statut, extra = {}) => {
+    const c = chambres[id];
+    const maj = { ...c, statut, maj: Date.now() };
+    maj.probleme = ("probleme" in extra) ? extra.probleme : (statut === "probleme" ? maj.probleme : null);
+    if ("employe" in extra) maj.employe = extra.employe;
+    if ("debut" in extra) maj.debut = extra.debut;
+    if ("fin" in extra) maj.fin = extra.fin;
+    if (SYNC_ACTIF && dbChambres) dbChambres.child(String(id)).set(maj); // l'écouteur mettra à jour l'état
+    setChambres((prev) => ({ ...prev, [id]: maj }));
+  };
+
+  const changerSejour = (id, sejour) => {
+    const maj = { ...chambres[id], sejour, maj: Date.now() };
+    if (SYNC_ACTIF && dbChambres) dbChambres.child(String(id)).set(maj);
+    setChambres((prev) => ({ ...prev, [id]: maj }));
+  };
+
+  const changerAssignee = (id, assignee) => {
+    const maj = { ...chambres[id], assignee: (assignee && assignee.trim()) ? assignee.trim() : null, maj: Date.now() };
+    if (SYNC_ACTIF && dbChambres) dbChambres.child(String(id)).set(maj);
+    setChambres((prev) => ({ ...prev, [id]: maj }));
+  };
+
+  const changerNote = (id, note) => {
+    const maj = { ...chambres[id], note: (note || "").trim(), maj: Date.now() };
+    if (SYNC_ACTIF && dbChambres) dbChambres.child(String(id)).set(maj);
+    setChambres((prev) => ({ ...prev, [id]: maj }));
+  };
+
+  const changerDate = (id, dateDepart) => {
+    const c = chambres[id];
+    let statut = c.statut;
+    if (dateDepart) {
+      // Date future → on bloque le ménage ; date du jour ou passée → à faire
+      statut = (dateDepart > aujourdHuiISO()) ? "ne_pas_faire" : "a_faire";
+    } else if (c.statut === "ne_pas_faire") {
+      statut = "a_faire"; // date effacée → on débloque
+    }
+    const maj = { ...c, dateDepart: dateDepart || null, statut, maj: Date.now() };
+    if (SYNC_ACTIF && dbChambres) dbChambres.child(String(id)).set(maj);
+    setChambres((prev) => ({ ...prev, [id]: maj }));
+  };
+
+  // Réinitialisation de la journée : « À faire », sauf les chambres avec un départ futur (« Ne pas faire »)
+  const reinitialiser = () => {
+    const today = aujourdHuiISO();
+    const next = {};
+    Object.values(chambres).forEach((c) => {
+      const statut = (c.dateDepart && c.dateDepart > today) ? "ne_pas_faire" : "a_faire";
+      next[c.id] = { ...c, statut, probleme: null, employe: null, debut: null, fin: null, maj: Date.now() };
+    });
+    if (SYNC_ACTIF && dbChambres) dbChambres.set(next);
+    setChambres(next);
+  };
+
+  // Bascule auto : une chambre « Ne pas faire » repasse « À faire » quand la date de départ est atteinte
+  useEffect(() => {
+    const verifierDeparts = () => {
+      const today = aujourdHuiISO();
+      setChambres((prev) => {
+        let change = false;
+        const next = { ...prev };
+        Object.values(prev).forEach((c) => {
+          if (c.statut === "ne_pas_faire" && c.dateDepart && c.dateDepart <= today) {
+            next[c.id] = { ...c, statut: "a_faire", maj: Date.now() };
+            change = true;
+            if (SYNC_ACTIF && dbChambres) dbChambres.child(String(c.id)).set(next[c.id]);
+          }
+        });
+        return change ? next : prev;
+      });
+    };
+    verifierDeparts();
+    const t = setInterval(verifierDeparts, 60000);
+    return () => clearInterval(t);
+  }, []);
+
+  // Réinitialisation automatique au changement de jour (1re ouverture de la journée)
+  useEffect(() => {
+    const RESET_KEY = STORAGE_KEY + "_jour";
+    const verifier = () => {
+      const d = new Date();
+      const jour = d.getFullYear() + "-" + (d.getMonth() + 1) + "-" + d.getDate();
+      const dernier = localStorage.getItem(RESET_KEY);
+      if (dernier !== jour) {
+        localStorage.setItem(RESET_KEY, jour);
+        if (dernier !== null) reinitialiser(); // ne pas réinitialiser au tout 1er lancement
+      }
+    };
+    verifier();
+    const t = setInterval(verifier, 60000);
+    return () => clearInterval(t);
+  }, []);
+
+  const compteur = (st) => Object.values(chambres).filter((c) => c.statut === st).length;
+  const total = Object.keys(chambres).length;
+  const progression = total ? Math.round((compteur("propre") / total) * 100) : 0;
+  const today = aujourdHuiISO();
+  const departsJour = Object.values(chambres).filter((c) => c.dateDepart === today).length;
+  const nomsConnus = [...new Set([
+    ...Object.values(personnel).map((p) => p.nom).filter(Boolean),
+    ...Object.values(chambres).map((c) => c.assignee).filter(Boolean),
+  ])].sort();
+
+  let liste = Object.values(chambres).filter((c) => {
+    if (filtrePreposee !== "tous" && c.assignee !== filtrePreposee) return false;
+    if (filtre === "tous") return true;
+    if (filtre === "departs_jour") return c.dateDepart === today;
+    return c.statut === filtre;
+  });
+  if (tri === "priorite") {
+    liste = [...liste].sort((a, b) => priorite(a, today) - priorite(b, today) || a.id - b.id);
+  }
+
+  return (
+    <div className="min-h-screen max-w-2xl mx-auto">
+      {/* Bannière d'alerte (nouveau problème) */}
+      {alerte && (
+        <div onClick={() => { setManager(true); if (alerteAction) alerteAction(); setAlerte(null); setAlerteAction(null); }}
+          className="fixed top-3 left-1/2 -translate-x-1/2 z-[60] w-[92%] max-w-md cursor-pointer rounded-2xl bg-red-600 text-white px-4 py-3 shadow-2xl flex items-center justify-between gap-3 animate-pulse">
+          <span className="font-bold text-sm">⚠ {alerte}</span>
+          <span className="text-xs underline whitespace-nowrap">Voir</span>
+        </div>
+      )}
+
+      {/* En-tête */}
+      <header className="px-4 pt-5 pb-3 text-white shadow-lg" style={{ background: "linear-gradient(135deg, var(--noir), #2a2a2a)" }}>
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-xl font-extrabold leading-tight" style={{ color: "var(--rose2)" }}>Rose et Basilic</h1>
+            <p className="text-[12px] text-white/70 flex items-center gap-1.5">
+              Auberge · 7 chambres · {heure.toLocaleTimeString("fr-CA", { hour: "2-digit", minute: "2-digit" })}
+              {SYNC_ACTIF && (
+                <span className="inline-flex items-center gap-1">· <span className="w-2 h-2 rounded-full" style={{ background: connecte ? "#4ade80" : "#fbbf24" }}></span>{connecte ? "Synchronisé" : "Connexion..."}</span>
+              )}
+            </p>
+          </div>
+          <button onClick={() => {
+              if (manager) setManager(false);
+              else if (authManager) setManager(true);
+              else setLoginOuvert(true);
+            }}
+            className={"px-4 py-2 rounded-full text-sm font-bold transition active:scale-95 " + (manager ? "bg-white" : "bg-white/15 text-white border border-white/30")}
+            style={manager ? { color: "var(--rose)" } : {}}>
+            {manager ? "← Vue chambres" : "🔒 Mode Manager"}
+          </button>
+        </div>
+
+        {/* Barre de progression globale */}
+        <div className="mt-3">
+          <div className="flex items-center justify-between text-[11px] text-white/80 mb-1">
+            <span>Progression du jour</span>
+            <span className="font-bold">{progression}% prêtes</span>
+          </div>
+          <div className="w-full h-2.5 rounded-full bg-white/20 overflow-hidden">
+            <div className="h-full rounded-full transition-all duration-500" style={{ width: progression + "%", background: "var(--rose2)" }}></div>
+          </div>
+        </div>
+
+        {/* Résumé */}
+        <div className="grid grid-cols-5 gap-1.5 mt-3">
+          {ORDRE_STATUTS.map((st) => (
+            <div key={st} className="rounded-xl bg-white/10 backdrop-blur px-1 py-2 text-center">
+              <div className="text-xl font-extrabold">{compteur(st)}</div>
+              <div className="text-[9px] text-white/80 leading-tight">{STATUTS[st].court}</div>
+            </div>
+          ))}
+        </div>
+      </header>
+
+      {manager ? (
+        <div>
+          {/* Onglets du mode Manager */}
+          <div className="flex gap-2 px-4 pt-3">
+            {[["suivi", "📋 Suivi"], ["reservations", "📅 Réservations"], ["personnel", "👥 Personnel & horaire"]].map(([k, lbl]) => (
+              <button key={k} onClick={() => setVueManager(k)}
+                className={"flex-1 py-2.5 rounded-xl text-sm font-bold transition active:scale-95 " + (vueManager === k ? "text-white" : "bg-white text-slate-600 border border-slate-200")}
+                style={vueManager === k ? { background: "var(--noir)" } : {}}>
+                {lbl}
+              </button>
+            ))}
+          </div>
+          {vueManager === "suivi" && (
+            <VueManager chambres={chambres} maintenant={heure} onResoudre={(id, st) => changerStatut(id, st)}
+              onReinitialiser={reinitialiser}
+              onDeconnexion={() => { setAuthManager(false); setManager(false); }} />
+          )}
+          {vueManager === "reservations" && (
+            <VueReservations reservations={reservations} onAjouter={ajouterReservation}
+              onModifier={modifierReservation} onSupprimer={supprimerReservation} />
+          )}
+          {vueManager === "personnel" && (
+            <VuePersonnel personnel={personnel} onAjouter={ajouterPrepose} onModifier={modifierPrepose}
+              onHoraire={modifierHoraire} onSupprimer={supprimerPrepose} />
+          )}
+        </div>
+      ) : (
+        <>
+          {/* Barre de contrôle collante : filtres */}
+          <div className="sticky top-0 z-20 bg-[#f7f1e6] shadow-sm">
+            <div className="flex gap-2 overflow-x-auto px-4 pt-3 pb-2">
+              {[["tous", "Tous"], ["departs_jour", "🛎 Départs auj. (" + departsJour + ")"], ...ORDRE_STATUTS.map((s) => [s, STATUTS[s].court])].map(([k, lbl]) => (
+                <button key={k} onClick={() => setFiltre(k)}
+                  className={"whitespace-nowrap px-4 py-2 rounded-full text-sm font-semibold transition active:scale-95 " + (filtre === k ? "text-white" : "bg-white text-slate-600 border border-slate-200")}
+                  style={filtre === k ? { background: "var(--noir)" } : {}}>
+                  {lbl}
+                </button>
+              ))}
+            </div>
+            <div className="flex gap-2 items-center px-4 pb-2">
+              <select value={filtrePreposee} onChange={(e) => setFiltrePreposee(e.target.value)}
+                className="rounded-full px-3 py-1.5 text-sm font-semibold bg-white text-slate-600 border border-slate-200 max-w-[55%]">
+                <option value="tous">👤 Toutes les préposées</option>
+                {nomsConnus.map((n) => <option key={n} value={n}>{n}</option>)}
+              </select>
+              <button onClick={() => setTri(tri === "numero" ? "priorite" : "numero")}
+                className="whitespace-nowrap px-3 py-1.5 rounded-full text-sm font-semibold bg-white text-slate-600 border border-slate-200 active:scale-95 transition">
+                Tri : {tri === "numero" ? "N°" : "⚡ Priorité"}
+              </button>
+            </div>
+          </div>
+
+          {/* Chambres */}
+          <div className="px-4 pb-24 pt-4">
+            <div className="grid grid-cols-3 sm:grid-cols-4 gap-3">
+              {liste.map((ch) => <CarteChambre key={ch.id} ch={ch} onClick={setSelection} />)}
+            </div>
+            {liste.length === 0 && <div className="text-center text-slate-400 py-10">Aucune chambre dans ce filtre.</div>}
+          </div>
+        </>
+      )}
+
+      {selection && (
+        <ModalChambre ch={chambres[selection.id]} onChange={changerStatut} onSejour={changerSejour} onDate={changerDate} onAssignee={changerAssignee} onNote={changerNote} nomsConnus={nomsConnus} estManager={authManager} onClose={() => setSelection(null)} />
+      )}
+
+      {loginOuvert && (
+        <ModalLogin onSuccess={() => {
+            setAuthManager(true); setManager(true); setLoginOuvert(false);
+            amorcerAudio();
+            try { if ("Notification" in window && Notification.permission === "default") Notification.requestPermission(); } catch (e) {}
+          }} onClose={() => setLoginOuvert(false)} />
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+<script>
+  // Service worker pour le mode hors ligne (actif seulement en https/http, pas en fichier local)
+  if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
+    window.addEventListener("load", function () {
+      navigator.serviceWorker.register("sw-rosebasilic.js").catch(function (e) { console.log("SW non enregistré:", e); });
+    });
+  }
+</script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+{
+  "name": "Rose et Basilic — Suivi Ménage",
+  "short_name": "Rose et Basilic",
+  "description": "Suivi de l'entretien des chambres en temps réel — Auberge Rose et Basilic",
+  "start_url": "rose-et-basilic.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#111111",
+  "theme_color": "#111111",
+  "lang": "fr-CA",
+  "icons": [
+    { "src": "icon-rosebasilic.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
